@@ -1,11 +1,21 @@
-[project]
+[tool.poetry]
 name = "iv-gauge"
 version = "0.1.0"
-requires-python = ">=3.11,<3.14"
-dependencies = [
-  "streamlit",
-  "numpy",
-  "pandas",
-  "matplotlib",
-  "yfinance==0.2.54"
-]
+description = "IV Gauge Streamlit app"
+authors = ["you <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.14"
+streamlit = "*"
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+yfinance = "0.2.54"
+requests = "*"
+lxml = "*"
+beautifulsoup4 = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
