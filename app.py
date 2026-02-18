@@ -7,7 +7,14 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-ticker = input("Enter ticker (examples: ^VIX, SPY, AAPL): ").strip().upper()
+import streamlit as st
+
+st.set_page_config(page_title="IV Gauge", layout="centered")
+st.title("IV Gauge (Z-Score)")
+
+ticker = st.text_input("Enter ticker", value="SPY").strip().upper()
+run = st.button("Run")
+
 
 WINDOW = 252
 PERIOD = "2y"
