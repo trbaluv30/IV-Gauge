@@ -1,96 +1,32 @@
-# Generated from: StreamLit-IV_Gauge.ipynb
-# Converted at: 2026-02-18T20:09:56.770Z
-# Next step (optional): refactor into modules & generate tests with RunCell
-# Quick start: pip install runcell
-
+import time
+import random
 import numpy as np
 import pandas as pd
-import yfinance as yf
-
 import streamlit as st
-
-st.set_page_config(page_title="IV Gauge", layout="centered")
-st.title("IV Gauge (Z-Score)")
-
-ticker = st.text_input("Enter ticker", value="SPY").strip().upper()
-run = st.button("Run")
-
-
-WINDOW = 252
-PERIOD = "2y"
-
-# ✅ workaround: use history() instead of download()
-df = yf.Ticker(ticker).history(period=PERIOD, interval="1d", auto_adjust=True).dropna()
-
-if df.empty:
-    raise ValueError(f"No data returned for ticker: {ticker}")
-
-if len(df) < WINDOW:
-    raise ValueError(f"Not enough data for {ticker}: got {len(df)} rows, need {WINDOW}. Increase PERIOD.")
-
-hist = df.tail(WINDOW).copy()
-hist["IV"] = hist["Close"]
-
-mu = hist["IV"].mean()
-sigma = hist["IV"].std(ddof=1)
-
-if sigma == 0 or np.isnan(sigma):
-    raise ValueError("Std dev is zero/NaN; cannot compute z-score.")
-
-current_date = hist.index[-1]
-current_iv = float(hist["IV"].iloc[-1])
-current_z  = float((current_iv - mu) / sigma)
-
-print(f"Latest trading day used: {current_date.date()}")
-print(f"IV (proxy) value: {current_iv:.4f}")
-print(f"Z-score (252D): {current_z:.4f}")
-
-
-def z_bucket(z: float) -> int:
-    z = float(z)
-    if z < -2:
-        return 1
-    elif z < -1:
-        return 2
-    elif z < 1:
-        return 3
-    elif z < 2:
-        return 4
-    else:
-        return 5
-
-bucket = z_bucket(current_z)
-
-labels = {
-    1: "< -2σ",
-    2: "[-2σ, -1σ)",
-    3: "[-1σ, 1σ)",
-    4: "[1σ, 2σ)",
-    5: ">= 2σ",
-}
-
-print(f"Z-score (252D): {current_z:.4f}  →  Section {bucket}")
-
-
-# ✅ Updated Gauge (your exact tweaks):
-# - Section 4 color: #FF7F50
-# - Section 5 color: #A30234
-# - Background: #666666
-# - Curved arc labels: "DEBIT" and "CREDIT" (capitalized)
-# - Arc label radius: 1.14
-# - Font changed (set globally via Matplotlib rcParams)
-# - Title "IV Z-Score" + ticker description on next line with ~1.5 line spacing
-
-import numpy as np
-import pandas as pd
 import yfinance as yf
 import matplotlib.pyplot as plt
 from matplotlib.patches import Wedge, Circle
 
-# ---- Font (change here if you want a specific installed font) ----
-plt.rcParams["font.family"] = "DejaVu Sans"   # safe default (available almost everywhere)
+# -----------------------------
+# Streamlit page setup
+# -----------------------------
+st.set_page_config(page_title="IV Gauge", layout="centered")
+st.title("IV Gauge (Z-Score)")
+
+# -----------------------------
+# Settings
+# -----------------------------
+WINDOW_DEFAULT = 252
+PERIOD_DEFAULT = "2y"
+
+# Matplotlib font (safe default)
+plt.rcParams["font.family"] = "DejaVu Sans"
 plt.rcParams["font.size"] = 11
 
+
+# -----------------------------
+# Helpers
+# -----------------------------
 def z_bucket(z: float) -> int:
     z = float(z)
     if z < -2:
@@ -104,23 +40,10 @@ def z_bucket(z: float) -> int:
     else:
         return 5
 
-def get_ticker_description(ticker: str) -> str:
-    """Fetch a human-friendly name from Yahoo via yfinance, with safe fallbacks."""
-    try:
-        info = yf.Ticker(ticker).info or {}
-        for key in ("longName", "shortName", "displayName", "name"):
-            val = info.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    except Exception:
-        pass
-    return ""
 
 def draw_arc_text(ax, text, radius, theta_start_deg, theta_end_deg,
                   fontsize=12, color="#F3F4F6", weight="bold"):
-    """
-    Draw curved text along an arc. Characters are placed at equal angle steps.
-    """
+    """Draw curved text along an arc by placing characters with tangent rotation."""
     text = str(text)
     n = max(len(text), 1)
     angles = np.linspace(theta_start_deg, theta_end_deg, n)
@@ -131,9 +54,7 @@ def draw_arc_text(ax, text, radius, theta_start_deg, theta_end_deg,
         ang = np.deg2rad(ang_deg)
         x = radius * np.cos(ang)
         y = radius * np.sin(ang)
-
-        # Tangent rotation
-        rot = ang_deg - 90
+        rot = ang_deg - 90  # tangent rotation
 
         ax.text(
             x, y, ch,
@@ -145,25 +66,63 @@ def draw_arc_text(ax, text, radius, theta_start_deg, theta_end_deg,
             fontweight=weight
         )
 
+
+@st.cache_data(ttl=6 * 60 * 60, show_spinner=False)  # cache for 6 hours
+def fetch_history_cached(ticker: str, period: str, interval: str = "1d") -> pd.DataFrame:
+    """Fetch OHLCV history from Yahoo via yfinance (cached)."""
+    df = yf.Ticker(ticker).history(period=period, interval=interval, auto_adjust=True)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.dropna()
+
+
+def fetch_with_retries(ticker: str, period: str, interval: str = "1d", attempts: int = 5) -> pd.DataFrame:
+    """Retry wrapper with exponential backoff + jitter (helps with transient Yahoo issues)."""
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return fetch_history_cached(ticker, period, interval)
+        except Exception as e:
+            last_err = e
+            sleep_s = min(2 ** attempt, 20) + random.uniform(0.2, 1.5)
+            time.sleep(sleep_s)
+    raise last_err
+
+
+@st.cache_data(ttl=24 * 60 * 60, show_spinner=False)  # cache 24h (optional)
+def get_ticker_description_cached(ticker: str) -> str:
+    """Optional: Fetch a human-friendly name (this may trigger rate-limit; cached)."""
+    try:
+        info = yf.Ticker(ticker).info or {}
+        for key in ("longName", "shortName", "displayName", "name"):
+            val = info.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    except Exception:
+        return ""
+    return ""
+
+
 def zscore_speedometer_custom(
     z,
     ticker="",
     date=None,
     window=252,
     bg="#666666",
-    arc_label_radius=1.14
+    arc_label_radius=1.14,
+    subtitle=""
 ):
+    """Return a Matplotlib Figure with the Z-score gauge."""
     z = float(z)
     bucket = z_bucket(z)
     z_display = float(np.clip(z, -3, 3))
 
-    # Section colors (your palette)
     colors = {
         1: "#0B5D1E",  # dark green
         2: "#7CCB7A",  # light green
         3: "#2F6FDB",  # blue
-        4: "#FF7F50",  # coral (requested)
-        5: "#A30234",  # deep red (requested)
+        4: "#FF7F50",  # coral
+        5: "#A30234",  # deep red
     }
 
     sections = [
@@ -177,7 +136,6 @@ def zscore_speedometer_custom(
     def z_to_angle_deg(zv):
         return np.interp(zv, [-3, 3], [180, 0])
 
-    # Figure and background
     fig, ax = plt.subplots(figsize=(10, 5.6))
     fig.patch.set_facecolor(bg)
     ax.set_facecolor(bg)
@@ -232,7 +190,7 @@ def zscore_speedometer_custom(
             fontsize=10, color="#F3F4F6"
         )
 
-    # Curved labels: DEBIT over [-3,-1], CREDIT over [1,3]
+    # Curved arc labels
     draw_arc_text(
         ax, "DEBIT",
         radius=arc_label_radius,
@@ -280,16 +238,7 @@ def zscore_speedometer_custom(
         except Exception:
             date_str = str(date)
 
-    # Ticker description
-    desc = get_ticker_description(ticker) if ticker else ""
-    if ticker and desc and desc.upper() != ticker.upper():
-        subtitle = f"{ticker} — {desc}"
-    elif ticker:
-        subtitle = f"{ticker}"
-    else:
-        subtitle = ""
-
-    # Title + subtitle with ~1.5 line spacing (placed manually)
+    # Title + subtitle
     ax.set_title("IV Z-Score", fontsize=16, pad=22, color="#F3F4F6", fontweight="bold")
     if subtitle:
         ax.text(
@@ -299,7 +248,7 @@ def zscore_speedometer_custom(
             fontsize=12, color="#F3F4F6"
         )
 
-    # Footer labels
+    # Footer
     bucket_label = {
         1: "< -2σ",
         2: "[-2σ, -1σ)",
@@ -317,16 +266,97 @@ def zscore_speedometer_custom(
     ax.set_xlim(-1.20, 1.20)
     ax.set_ylim(-0.30, 1.25)
 
-    plt.show()
+    return fig
 
 
-# ---- Call (uses your existing variables) ----
-# Assumes you already have: ticker, current_date, current_z, WINDOW
-zscore_speedometer_custom(
-    current_z,
-    ticker=ticker,
-    date=current_date,
-    window=WINDOW,
-    bg="#666666",
-    arc_label_radius=1.14
-)
+# -----------------------------
+# UI (Form)
+# -----------------------------
+with st.form("run_form"):
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        ticker = st.text_input("Enter ticker (examples: ^VIX, SPY, AAPL)", value="SPY").strip().upper()
+    with c2:
+        window = st.number_input("Window (days)", min_value=30, max_value=400, value=WINDOW_DEFAULT, step=1)
+
+    period = st.text_input("Period (yfinance)", value=PERIOD_DEFAULT).strip()
+    show_desc = st.checkbox("Fetch ticker description (extra Yahoo call)", value=False)
+
+    run = st.form_submit_button("Run")
+
+
+# -----------------------------
+# Run logic
+# -----------------------------
+if run:
+    if not ticker:
+        st.warning("Please enter a ticker.")
+        st.stop()
+
+    with st.spinner("Fetching data…"):
+        try:
+            df = fetch_with_retries(ticker, period=period, interval="1d", attempts=5)
+        except Exception as e:
+            msg = str(e)
+            if "Too Many Requests" in msg or "YFRateLimitError" in msg:
+                st.error(
+                    "Yahoo Finance rate-limited this Streamlit Cloud IP.\n\n"
+                    "Try again in 1–5 minutes, or reduce calls, or deploy with a dedicated IP."
+                )
+            else:
+                st.exception(e)
+            st.stop()
+
+    if df.empty:
+        st.error(f"No data returned for ticker: {ticker}")
+        st.stop()
+
+    if len(df) < int(window):
+        st.error(f"Not enough daily rows for {ticker}. Got {len(df)}, need {int(window)}. Increase PERIOD.")
+        st.stop()
+
+    # Use last WINDOW rows
+    hist = df.tail(int(window)).copy()
+
+    # Your current "IV proxy"
+    hist["IV"] = hist["Close"]
+
+    mu = float(hist["IV"].mean())
+    sigma = float(hist["IV"].std(ddof=1))
+
+    if sigma == 0 or np.isnan(sigma):
+        st.error("Std dev is zero/NaN; cannot compute z-score.")
+        st.stop()
+
+    current_date = hist.index[-1]
+    current_iv = float(hist["IV"].iloc[-1])
+    current_z = float((current_iv - mu) / sigma)
+
+    # Show key values on screen (instead of print)
+    st.success(f"Loaded {len(df)} rows for {ticker}. Last date: {pd.to_datetime(current_date).date()}")
+    st.write(f"**IV (proxy) value:** {current_iv:.4f}")
+    st.write(f"**Z-score ({int(window)}D):** {current_z:.4f} → **Section {z_bucket(current_z)}**")
+
+    # Optional description (can cause rate-limit; cached if enabled)
+    subtitle = ticker
+    if show_desc:
+        with st.spinner("Fetching ticker description…"):
+            desc = get_ticker_description_cached(ticker)
+        if desc and desc.upper() != ticker.upper():
+            subtitle = f"{ticker} — {desc}"
+
+    # Build figure and display it
+    fig = zscore_speedometer_custom(
+        current_z,
+        ticker=ticker,
+        date=current_date,
+        window=int(window),
+        bg="#666666",
+        arc_label_radius=1.14,
+        subtitle=subtitle
+    )
+    st.pyplot(fig, clear_figure=True)
+
+else:
+    st.info("Enter a ticker and click Run.")
+
