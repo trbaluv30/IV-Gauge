@@ -3,6 +3,8 @@ name = "iv-gauge"
 version = "0.1.0"
 description = "IV Gauge Streamlit app"
 authors = ["trbaluv30 <trbaluv30@example.com>"]
+package-mode = false
+
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
